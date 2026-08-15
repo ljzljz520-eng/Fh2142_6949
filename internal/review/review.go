@@ -46,6 +46,19 @@ func (r *Repository) Save(record Record) {
 	r.records[record.ID] = clone(record)
 }
 
+func (r *Repository) SetConfirmation(id, operator, content string) (Record, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record, ok := r.records[id]
+	if !ok {
+		return Record{}, ErrRecordNotFound
+	}
+	updated := clone(record)
+	updated.Confirmations[operator] = content
+	r.records[id] = updated
+	return clone(updated), nil
+}
+
 type Service struct {
 	repository     *Repository
 	snapshotLoaded func()
@@ -65,16 +78,14 @@ func (s *Service) Confirm(id, operator, content string) (Record, error) {
 	if operator == "" || content == "" {
 		return Record{}, ErrInvalidConfirmation
 	}
-	record, err := s.repository.Get(id)
+	_, err := s.repository.Get(id)
 	if err != nil {
 		return Record{}, err
 	}
 	if s.snapshotLoaded != nil {
 		s.snapshotLoaded()
 	}
-	record.Confirmations[operator] = content
-	s.repository.Save(record)
-	return record, nil
+	return s.repository.SetConfirmation(id, operator, content)
 }
 
 func clone(record Record) Record {
