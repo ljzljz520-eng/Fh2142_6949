@@ -40,10 +40,22 @@ func (r *Repository) Get(id string) (Record, error) {
 	return clone(record), nil
 }
 
-func (r *Repository) Save(record Record) {
+// Update atomically merges a single confirmation into the latest persisted
+// record. The whole read-modify-write happens under the repository's write
+// lock, so concurrent confirmations for the same record never overwrite one
+// another: each update is applied to the freshest state instead of a snapshot
+// that may already be stale.
+func (r *Repository) Update(id, operator, content string) (Record, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.records[record.ID] = clone(record)
+	record, ok := r.records[id]
+	if !ok {
+		return Record{}, ErrRecordNotFound
+	}
+	updated := clone(record)
+	updated.Confirmations[operator] = content
+	r.records[id] = updated
+	return clone(updated), nil
 }
 
 type Service struct {
@@ -65,16 +77,17 @@ func (s *Service) Confirm(id, operator, content string) (Record, error) {
 	if operator == "" || content == "" {
 		return Record{}, ErrInvalidConfirmation
 	}
-	record, err := s.repository.Get(id)
-	if err != nil {
+	// Load a snapshot and run the synchronization hook on it, so callers (and
+	// tests) can coordinate concurrent confirmations. The snapshot is only used
+	// to verify the record exists before blocking; the actual write happens via
+	// the atomic Update below, which always merges into the freshest state.
+	if _, err := s.repository.Get(id); err != nil {
 		return Record{}, err
 	}
 	if s.snapshotLoaded != nil {
 		s.snapshotLoaded()
 	}
-	record.Confirmations[operator] = content
-	s.repository.Save(record)
-	return record, nil
+	return s.repository.Update(id, operator, content)
 }
 
 func clone(record Record) Record {
